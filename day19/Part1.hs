@@ -3,9 +3,13 @@ module Main
        where
 
 import Control.Applicative
+import Data.Maybe (fromJust)
+import Data.Map (Map, (!))
+import qualified Data.Map as Map
 import Text.Trifecta
 import System.Environment (getArgs)
 
+type Comparison = (Integer -> Integer -> Bool)
 type Label = String
 type Part  =
   (Integer, Integer, Integer, Integer)
@@ -16,31 +20,52 @@ data Category = X | M | A | S
 
 data Rule =
     Simple Target
-  | Complex Category Ordering Integer Target
+  | Complex Category Comparison Integer Target
     deriving Show
 
 data Target = Accept | Reject | Goto Label
-  deriving Show
+  deriving (Eq, Show)
+
+instance Show (a -> b) where
+  show _ = "<()>"
 
 main :: IO ()
 main = do
   filename <- head <$> getArgs
   solve filename >>= print
 
-solve :: FilePath -> IO Int
+solve :: FilePath -> IO Integer
 solve filename = do
   content <- readFile filename
-  let t =
-        parseString parseInput mempty content
-  print t
-  return $ length content
+  let (workstations, parts) =
+        case parseString parseInput mempty content of
+          Success s -> s
+          Failure f  -> error (show f)
+      start          = "in"
+      workstationMap = Map.fromList workstations
+      solver         = solvePart workstationMap start
+  return $ sum $ map rate $ filter (\part -> (solver part) == Accept) parts
+
+solvePart :: Map Label [Rule] -> Label -> Part -> Target
+solvePart workstationMap start part
+  = head 
+    $ dropWhile (\x -> (x /= Accept && x /= Reject))
+    $ iterate (nextTarget workstationMap part) (Goto start)
+
+nextTarget :: Map Label [Rule] -> Part -> Target -> Target
+nextTarget workstationMap part target
+  = part `matchRule` rules
+    where rules = workstationMap ! (labelOf target)
+
+rate :: Part -> Integer
+rate (x, m, a, s) = x + m + a + s
 
 parseInput :: Parser ([Workstation], [Part])
 parseInput = do
   workstations <- some workstation
   char '\n'
   parts <- some part
-  return (workstations, [])
+  return (workstations, parts)
 
 workstation :: Parser Workstation
 workstation = do
@@ -52,7 +77,7 @@ workstation = do
 
 rule :: Parser Rule
 rule = do
-      parseComplexRule
+      try parseComplexRule
   <|> parseSimpleRule
 
 parseCategory :: Parser Category
@@ -62,21 +87,20 @@ parseCategory = do
   <|> (const A <$> char 'a')
   <|> (const S <$> char 's')
 
-parseOrdering :: Parser Ordering
-parseOrdering = do
-      (const GT <$> char '>')
-  <|> (const LT <$> char '<')
-  <|> (const EQ <$> char '=')
+parseComparison :: Parser Comparison
+parseComparison = do
+      (const (>)  <$> char '>')
+  <|> (const (<)  <$> char '<')
+  <|> (const (==) <$> char '=')
 
 parseSimpleRule :: Parser Rule
 parseSimpleRule = do
-  target <- parseTarget
-  return $ Simple target
+  Simple <$> parseTarget
 
 parseComplexRule :: Parser Rule
 parseComplexRule = do
   category <- parseCategory
-  ordering <- parseOrdering
+  ordering <- parseComparison
   measure  <- integer
   char ':'
   target <- parseTarget
@@ -99,3 +123,27 @@ part = do
           parseCategory
           char '='
           integer
+
+matchRule :: Part -> [Rule] -> Target
+matchRule part rules =
+  fromJust $ firstJust $ map (match part) rules
+  where match :: Part -> Rule -> Maybe Target
+        match part (Simple target) = Just target
+        match (x, m, a, s)
+                (Complex category comp n target)
+                  = let check y = if y `comp` n then Just target else Nothing
+                    in case category of
+                      X -> check x
+                      M -> check m
+                      A -> check a
+                      S -> check s
+
+firstJust :: [Maybe a] -> Maybe a
+firstJust [] = Nothing
+firstJust (j@(Just _):_) = j
+firstJust (x:xs)         = firstJust xs
+
+labelOf :: Target -> Label
+labelOf (Goto l) = l
+labelOf (Accept) = "A"
+labelOf (Reject) = "R"
